@@ -1,0 +1,222 @@
+<%@ jet 
+    imports="
+        org.talend.core.model.process.INode
+        org.talend.core.model.process.ElementParameterParser
+        org.talend.designer.codegen.config.CodeGeneratorArgument
+		org.talend.core.model.process.IConnection
+		org.talend.core.model.metadata.IMetadataColumn
+		org.talend.core.model.metadata.IMetadataTable
+		org.talend.core.model.metadata.types.JavaTypesManager
+		org.talend.core.model.process.IConnectionCategory
+		java.util.List
+    " 
+%>
+<%
+CodeGeneratorArgument codeGenArgument = (CodeGeneratorArgument) argument;
+INode node = (INode)codeGenArgument.getArgument();
+String cid = node.getUniqueName();
+
+boolean create="true".equals(ElementParameterParser.getValue(node, "__ENTRY_CREATE__"));
+boolean delete="true".equals(ElementParameterParser.getValue(node, "__ENTRY_DELETE__"));
+boolean modify="true".equals(ElementParameterParser.getValue(node, "__ENTRY_MODIFY__"));
+java.util.List<String> list = new java.util.ArrayList<String>();
+
+	if(create) list.add("java.nio.file.StandardWatchEventKinds.ENTRY_CREATE");
+    if(delete) list.add("java.nio.file.StandardWatchEventKinds.ENTRY_DELETE");
+    if(modify) list.add("java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY");
+
+class Utils {
+	// append watch event
+	public String join(Iterable<? extends CharSequence> s, String delimiter) {
+		java.util.Iterator<? extends CharSequence> iter = s.iterator();
+		if (!iter.hasNext()) return "null";
+		StringBuilder buffer = new StringBuilder(iter.next());
+		while (iter.hasNext()) buffer.append(delimiter).append(iter.next());
+		return buffer.toString();
+	}
+}
+
+Utils util = new Utils();
+String itemToWatch = util.join(list, ",");
+
+%>
+class Watch_<%=cid%>
+{ 
+    @SuppressWarnings("unchecked")
+	<T> java.nio.file.WatchEvent<T> cast(java.nio.file.WatchEvent<?> event) {
+        return (java.nio.file.WatchEvent<T>)event;
+    }
+	
+    // Register the given directory, and all its sub-directories, with the WatchService.
+    void registerAll(final java.nio.file.Path start, final java.nio.file.WatchService watcher, final java.util.Map<java.nio.file.WatchKey,java.nio.file.Path> keys, final boolean trace) throws java.io.IOException {
+        
+    	// register directory and sub-directories
+    	java.nio.file.Files.walkFileTree(start, new java.nio.file.SimpleFileVisitor<java.nio.file.Path>() {
+            @Override
+            public java.nio.file.FileVisitResult preVisitDirectory(java.nio.file.Path dir, java.nio.file.attribute.BasicFileAttributes attrs) throws java.io.IOException {
+            	register(dir, watcher, keys, trace);
+                return java.nio.file.FileVisitResult.CONTINUE;
+            }
+        });
+    }
+	
+    void register(java.nio.file.Path dir, java.nio.file.WatchService watcher, java.util.Map<java.nio.file.WatchKey,java.nio.file.Path> keys, boolean trace) throws java.io.IOException {
+    	
+		if ("<%=itemToWatch %>".equals("null")) {
+			throw new java.io.IOException("At least one event must be selected");
+		}
+		
+    	java.nio.file.WatchKey key = dir.register(watcher, <%=itemToWatch %>);
+    	
+        if (trace) {
+        	java.nio.file.Path prev = keys.get(key);
+            if (prev == null) {
+				globalMap.put("<%=cid %>_REGISTER", dir.toString());
+            } else {
+                if (!dir.equals(prev)) {
+					globalMap.put("<%=cid %>_PREVIOUS_DIR", prev.toString());
+                }
+            }
+        }
+        keys.put(key, dir);
+    }
+}
+
+	boolean recursive_<%=cid%> = <%=ElementParameterParser.getValue(node, "__INCLUDE_SUBDIR__")%>;
+	String directory_<%=cid%> = <%=ElementParameterParser.getValue(node, "__DIRECTORY__") %>;
+
+	// register directory and process its events
+	java.nio.file.Path dir = java.nio.file.Paths.get(directory_<%=cid%>);
+	final java.nio.file.WatchService watcher;
+	final java.util.Map<java.nio.file.WatchKey,java.nio.file.Path> keys;
+	boolean trace = false;
+			
+	watcher = java.nio.file.FileSystems.getDefault().newWatchService();
+	keys = new java.util.HashMap<java.nio.file.WatchKey,java.nio.file.Path>();
+	
+	Watch_<%=cid%> w = new Watch_<%=cid%>();
+			   
+        System.out.format("Running scan on %s ...\n", dir);
+        
+        if (recursive_<%=cid%>) {
+            w.registerAll(dir, watcher, keys, trace);
+        } else {
+            w.register(dir, watcher, keys, trace);
+        }
+
+		// counter
+		int cpt_<%=cid%>=0;
+        // enable trace after initial registration
+        trace = true;
+        
+        // Process all events for keys queued to the watcher
+
+         <%if("".equals(ElementParameterParser.getValue(node,"__MAX_ITERATIONS__"))) {%> 	
+					for (;;)
+		<%} else { %> 
+					for (int i=0;i< <%=ElementParameterParser.getValue(node,"__MAX_ITERATIONS__")%>;i++)
+		<%} %>
+			{
+				cpt_<%=cid%>++;
+				
+                // wait for key
+            	java.nio.file.WatchKey key;
+                try {	
+                    key = watcher.take();
+					globalMap.put("<%=cid %>_CURRENT_ITERATION", cpt_<%=cid%>);
+                } catch (InterruptedException x) {
+                    return;
+                }
+
+                java.nio.file.Path directory = keys.get(key);
+                if (dir == null) {
+                    System.err.println("WatchKey not recognized!!");
+                    continue;
+                }
+
+                for (java.nio.file.WatchEvent<?> event: key.pollEvents()) {
+                	@SuppressWarnings("rawtypes")
+    				java.nio.file.WatchEvent.Kind kind = event.kind();
+
+                	//OVERFLOW is a special event to indicate that events may have been lost or discarded.
+                    if (kind == java.nio.file.StandardWatchEventKinds.OVERFLOW) {
+                    	throw new java.io.IOException("Events may have been lost or discarded");
+                    }
+
+                    // Context for directory entry event is the file name of entry
+                    java.nio.file.WatchEvent<java.nio.file.Path> ev = w.cast(event);
+                    
+                    //get element name
+                    java.nio.file.Path name = ev.context();
+					globalMap.put("<%=cid %>_ITEMNAME", name.toString());
+                    
+                    //get full path
+                    java.nio.file.Path child = directory.resolve(name);
+                    globalMap.put("<%=cid %>_FULLPATH", child.toString());
+					
+                    //get event
+					globalMap.put("<%=cid %>_EVENT", event.kind().name().toString());               
+                    
+                    try {
+                        String type = java.nio.file.Files.probeContentType(name);
+						//Get MIME Type
+						globalMap.put("<%=cid %>_MIMETYPE", type==null?"Unknown":type);
+						
+                    } catch (java.io.IOException x) {
+                        System.err.println(x);
+                    }
+
+                    // if directory is created, and watching recursively, then register it and its sub-directories
+                    if (recursive_<%=cid%> && (kind == java.nio.file.StandardWatchEventKinds.ENTRY_CREATE)) {
+                        try {
+                            if (java.nio.file.Files.isDirectory(child, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                            	w.registerAll(dir, watcher, keys, trace);
+								globalMap.put("<%=cid %>_ISDIRECTORY", true);
+                            }
+							else {
+								globalMap.put("<%=cid %>_ISDIRECTORY", false);
+							}
+                        } catch (java.io.IOException x) {
+                            System.err.println(x);
+                        }
+                    }
+                }
+
+                // Reset the key -- this step is critical if you want to
+                // receive further watch events.  If the key is no longer valid,
+                // the directory is inaccessible so exit the loop.
+                
+                boolean valid = key.reset();
+                if (!valid) {
+                    keys.remove(key);
+
+                    // all directories are inaccessible
+                    if (keys.isEmpty()) {
+                        break;
+                    }
+                }
+				
+
+<%	
+List<IMetadataTable> metadatas = node.getMetadataList();
+List< ? extends IConnection> conns = node.getOutgoingSortedConnections();
+IMetadataTable metadata = metadatas.get(0);
+List<IMetadataColumn> listColumns = metadata.getListColumns();
+
+	if (conns!=null && conns.size()>0) {
+		if (metadatas!=null && metadatas.size()>0 ) {
+		   if (metadata!=null) {
+				IConnection conn = conns.get(0);
+				String firstConnName = conn.getName();
+
+					//Loop on every column and put get method	
+					 for (IMetadataColumn column: listColumns) {
+					 String typeToGenerate = JavaTypesManager.getTypeToGenerate(column.getTalendType(), column.isNullable());
+					 %> 
+							<%=firstConnName %>.<%=column.getLabel() %> = ((<%=typeToGenerate %>)globalMap.get("<%=cid %>_<%=column.getLabel() %>")); 
+					<%
+					 }
+			}
+		}
+	}
+%>

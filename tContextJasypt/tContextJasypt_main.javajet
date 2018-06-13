@@ -1,0 +1,68 @@
+<%@ jet 
+	imports="
+		org.talend.core.model.process.INode 
+		org.talend.core.model.process.ElementParameterParser
+		org.talend.designer.codegen.config.CodeGeneratorArgument
+	"
+%>
+
+<%
+	CodeGeneratorArgument codeGenArgument = (CodeGeneratorArgument) argument;
+	INode node = (INode)codeGenArgument.getArgument();
+	String cid = node.getUniqueName();
+	boolean useCustom = "true".equals(ElementParameterParser.getValue(node, "__USE_CUSTOM__"));
+	boolean useSysEnv = "true".equals(ElementParameterParser.getValue(node, "__USE_SYS_ENV__"));
+	boolean useJvmProp = "true".equals(ElementParameterParser.getValue(node, "__USE_JVM_PROP__"));
+	boolean dieOnError = "true".equals(ElementParameterParser.getValue(node, "__DIE_ON_ERROR__"));
+	boolean isLog4jEnabled = ("true").equals(ElementParameterParser.getValue(node.getProcess(), "__LOG4J_ACTIVATE__"));
+    boolean isLogContent = ("true").equals(ElementParameterParser.getValue(node,"__PRINT_CONTENT_WITH_LOG4J__"));
+%>
+		try {
+					String masterPassword_<%=cid%> =
+<%
+					if(useCustom) {
+%>									
+						 <%=ElementParameterParser.getValue(node, "__PASSPHRASE__") %>;			
+<%
+					} else if(useSysEnv) {
+%>	
+						System.getenv().get(<%=ElementParameterParser.getValue(node, "__GLOBALSYSTEM__") %>);
+<%
+					} else if(useJvmProp) {
+%>
+						System.getProperty(<%=ElementParameterParser.getValue(node, "__JVMSYSTEM__") %>);
+<%
+					}
+%>						
+		String path =  "./" + this.getClass().getPackage().getName().replace(".", "/").concat("/contexts/").concat(contextStr).concat(".properties");
+		org.jasypt.encryption.pbe.StandardPBEStringEncryptor encryptor = new org.jasypt.encryption.pbe.StandardPBEStringEncryptor();
+		encryptor.setPassword(masterPassword_<%=cid%>);
+		java.util.Properties props = new org.jasypt.properties.EncryptableProperties(encryptor);
+		props.load(this.getClass().getClassLoader().getResourceAsStream(path));
+		java.util.Enumeration<?> e = props.propertyNames();
+
+			while (e.hasMoreElements()) {
+				String key = (String) e.nextElement();
+				String value = props.getProperty(key);
+				java.lang.reflect.Field field = org.apache.commons.lang.reflect.FieldUtils.getField(context.getClass(), key);
+				String fieldType = field.getType().getSimpleName();
+						
+				if ("String".equalsIgnoreCase(fieldType))
+					org.apache.commons.lang.reflect.FieldUtils.writeDeclaredField(context, key, value, true);
+				}
+				} catch (java.lang.Exception e_<%=cid%>) {
+<%
+					if(dieOnError) {
+%>
+						throw e_<%=cid%>;
+<%
+					} else {
+%>
+						<%if(isLogContent && isLog4jEnabled){%>
+						log.error("<%=cid%> - " +e_<%=cid%>.getMessage());
+						<%}%>
+						System.err.println(e_<%=cid%>);
+<%
+					}
+%>
+				}
